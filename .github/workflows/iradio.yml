@@ -28,8 +28,9 @@ jobs:
           pip install -r requirements.txt
 
       - name: Scrape and update CSV
-        run: |
-          python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe
+  run: |
+    python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe --insecure
+
 
       - name: Commit & push (if changed)
         run: |
