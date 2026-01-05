@@ -39,11 +39,10 @@ jobs:
           git add data/iradio_today.csv
           git diff --cached --quiet || git commit -m "Update iradio playlist"
           git push
-
-- name: Upload debug HTML (on failure)
-  if: failure()
-  uses: actions/upload-artifact@v4
-  with:
-    name: debug-last-html
-    path: debug_last.html
-    if-no-files-found: ignore
+      - name: Upload debug HTML (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+        name: debug-last-html
+        path: debug_last.html
+        if-no-files-found: ignore
