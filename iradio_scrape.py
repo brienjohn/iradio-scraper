@@ -10,6 +10,9 @@ import urllib3
 from requests.exceptions import SSLError
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+from io import StringIO
+
+
 BASE_URL = "https://www.bcc.com.tw/news3_search.asp"
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -37,7 +40,7 @@ def fetch_html(params: dict, verify_ssl: bool = True, retries: int = 5, timeout:
 
 
 def extract_table(html: str) -> pd.DataFrame:
-    tables = pd.read_html(html)
+    tables = pd.read_html(StringIO(html))
     if not tables:
         raise ValueError("No tables found on the page (site layout may have changed).")
 
