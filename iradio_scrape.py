@@ -56,14 +56,14 @@ def extract_table(html: str) -> pd.DataFrame:
 
 def fetch_dt_all_pages(dt_days_ago: int, max_pages: int = 50, verify_ssl: bool = True) -> pd.DataFrame:
     dfs = []
+
     for p in range(1, max_pages + 1):
         params = {"p": str(p)}
-# 重要：今天（dt_days_ago == 0）不要帶 dt 參數，直接用 base URL
-if dt_days_ago > 0:
-    params["dt"] = str(dt_days_ago)
+        # 重要：今天（dt_days_ago == 0）不要帶 dt 參數，直接用 base URL
+        if dt_days_ago > 0:
+            params["dt"] = str(dt_days_ago)
 
-html = fetch_html(params, verify_ssl=verify_ssl)
-
+        html = fetch_html(params, verify_ssl=verify_ssl)
         df = extract_table(html)
 
         if df.shape[0] == 0:
@@ -82,7 +82,9 @@ html = fetch_html(params, verify_ssl=verify_ssl)
 
     if not dfs:
         return pd.DataFrame()
+
     return pd.concat(dfs, ignore_index=True)
+
 
 def merge_dedupe(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
     if existing_path.exists():
