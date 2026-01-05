@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Taipei
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,13 +25,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U pip
+          python -m pip install -U pip
           pip install -r requirements.txt
 
       - name: Scrape and update CSV
-  run: |
-    python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe --insecure
-
+        run: |
+          python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe --insecure
 
       - name: Commit & push (if changed)
         run: |
