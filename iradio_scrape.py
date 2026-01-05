@@ -75,37 +75,92 @@ def extract_tokens(html: str) -> list[str]:
     return cleaned
 
 
-def find_header_and_mode(tokens: list[str]) -> tuple[bool, int]:
+def parse_rows(tokens: list[str], base_date: dt.date) -> pd.DataFrame:
     """
-    回傳 (has_date_column, data_start_index)
-    - has_date_column=True: header 是「日期 播出時間 歌曲名稱 ...」
-    - has_date_column=False: header 是「播出時間 歌曲名稱 演唱(奏)者 ...」
+    不靠表頭（播出時間/歌曲名稱/演唱...)。
+    規則：
+    - 看到 MM/DD 就更新 current_date（處理 dt=1..7 那種頁）
+    - 看到 HH:MM 就視為一筆資料開始：HH:MM、歌名、歌手、後面可選欄位直到下一個 HH:MM 或 MM/DD
     """
-    # 模式 1：有日期欄
-    for i in range(len(tokens) - 4):
-        if tokens[i] == "日期" and tokens[i + 1] == "播出時間" and tokens[i + 2] == "歌曲名稱":
-            j = i
-            while j < len(tokens):
-                t = tokens[j]
-                if t in ("日期", "播出時間", "歌曲名稱", "專輯", "出版者", "CD編號") or t.startswith("演唱"):
-                    j += 1
-                    continue
-                break
-            return True, j
+    rows = []
+    current_date = base_date.isoformat()
 
-    # 模式 2：無日期欄（今天常見）
-    for i in range(len(tokens) - 3):
-        if tokens[i] == "播出時間" and tokens[i + 1] == "歌曲名稱" and tokens[i + 2].startswith("演唱"):
-            j = i
-            while j < len(tokens):
-                t = tokens[j]
-                if t in ("播出時間", "歌曲名稱", "專輯", "出版者", "CD編號") or t.startswith("演唱"):
-                    j += 1
-                    continue
-                break
-            return False, j
+    def is_stop(x: str) -> bool:
+        # 遇到導覽/頁尾文字就停止（避免把網站導覽當資料）
+        stop_words = ("上一頁", "下一頁", "官網首頁", "本網站內容屬於", "回到", "TOP")
+        return any(w in x for w in stop_words)
 
-    raise ValueError("Cannot locate header (播出時間/歌曲名稱/演唱...) in page.")
+    i = 0
+    n = len(tokens)
+
+    while i < n:
+        t = tokens[i]
+
+        if is_stop(t):
+            break
+
+        # dt=1..7 頁面常有 MM/DD
+        if DATE_MMDD_RE.match(t):
+            current_date = mmdd_to_iso(t, base_date)
+            i += 1
+            continue
+
+        # 一筆資料的起點：HH:MM
+        if TIME_RE.match(t):
+            play_time = t
+
+            # 取下一個 token 當歌名
+            if i + 1 >= n:
+                break
+            song = tokens[i + 1]
+
+            # 再下一個 token 當歌手
+            if i + 2 >= n:
+                break
+            artist = tokens[i + 2]
+
+            # 基本防呆：如果歌名/歌手不合理（又是時間/日期），跳過
+            if TIME_RE.match(song) or DATE_MMDD_RE.match(song) or TIME_RE.match(artist) or DATE_MMDD_RE.match(artist):
+                i += 1
+                continue
+
+            # 後面可選欄位（專輯/出版者/CD編號…），直到下一個 HH:MM 或 MM/DD
+            extras = []
+            j = i + 3
+            while j < n:
+                nt = tokens[j]
+                if is_stop(nt):
+                    break
+                if TIME_RE.match(nt) or DATE_MMDD_RE.match(nt):
+                    break
+                extras.append(nt)
+                j += 1
+
+            row = {
+                "日期": current_date,
+                "播出時間": play_time,
+                "歌曲名稱": song,
+                "演唱(奏)者": artist,
+                "專輯": extras[0] if len(extras) >= 1 else "",
+                "出版者": extras[1] if len(extras) >= 2 else "",
+                "CD編號": extras[2] if len(extras) >= 3 else "",
+            }
+            rows.append(row)
+
+            i = j
+            continue
+
+        i += 1
+
+    df = pd.DataFrame(rows)
+
+    # 若解析不到任何資料，輸出 tokens 方便你下載檢查
+    if df.empty:
+        Path("debug_tokens.txt").write_text("\n".join(tokens[:500]), encoding="utf-8", errors="ignore")
+        raise ValueError("Parsed 0 rows (see debug_last.html and debug_tokens.txt).")
+
+    return df
+
 
 
 def parse_rows(tokens: list[str], base_date: dt.date) -> pd.DataFrame:
