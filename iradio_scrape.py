@@ -57,7 +57,13 @@ def extract_table(html: str) -> pd.DataFrame:
 def fetch_dt_all_pages(dt_days_ago: int, max_pages: int = 50, verify_ssl: bool = True) -> pd.DataFrame:
     dfs = []
     for p in range(1, max_pages + 1):
-        html = fetch_html({"dt": str(dt_days_ago), "p": str(p)}, verify_ssl=verify_ssl)
+        params = {"p": str(p)}
+# 重要：今天（dt_days_ago == 0）不要帶 dt 參數，直接用 base URL
+if dt_days_ago > 0:
+    params["dt"] = str(dt_days_ago)
+
+html = fetch_html(params, verify_ssl=verify_ssl)
+
         df = extract_table(html)
 
         if df.shape[0] == 0:
@@ -96,7 +102,7 @@ def merge_dedupe(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dt", type=int, default=0, help="0=today, 1=yesterday, 2=two days ago...")
+    ap.add_argument("--dt", type=int, default=0, help="0=today (no dt param), 1=one day ago (dt=1), 2=two days ago (dt=2)...")
     ap.add_argument("--max-pages", type=int, default=50)
     ap.add_argument("--out", type=str, default="data/iradio_today.csv")
     ap.add_argument("--append-dedupe", action="store_true")
