@@ -28,21 +28,32 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
+      # 讓後續步驟（上傳 debug）一定能跑到，所以這步先不讓 job 立刻中止
       - name: Scrape and update CSV
+        id: scrape
+        continue-on-error: true
         run: |
           python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe --insecure
 
+      - name: Upload debug HTML (if scrape failed)
+        if: steps.scrape.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-last-html
+          path: debug_last.html
+          if-no-files-found: ignore
+
+      # 若爬取失敗，這步把 job 明確標成失敗（你才看得出來）
+      - name: Fail job if scrape failed
+        if: steps.scrape.outcome != 'success'
+        run: |
+          exit 1
+
       - name: Commit & push (if changed)
+        if: steps.scrape.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/iradio_today.csv
           git diff --cached --quiet || git commit -m "Update iradio playlist"
           git push
-      - name: Upload debug HTML (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-        name: debug-last-html
-        path: debug_last.html
-        if-no-files-found: ignore
