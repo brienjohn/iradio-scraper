@@ -1,260 +1,68 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+name: iradio scrape
 
-import argparse
-import datetime as dt
-import re
-import time
-import traceback
-from pathlib import Path
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
 
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+permissions:
+  contents: write
 
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Taipei
 
-BASE_URL = "https://www.bcc.com.tw/news3_search.asp"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120 Safari/537.36"
-    ),
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Connection": "keep-alive",
-}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-DATE_MMDD_RE = re.compile(r"^\d{2}/\d{2}$")  # 例如 01/05
-TIME_RE = re.compile(r"^\d{2}:\d{2}$")       # 例如 13:47
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
 
-STOP_WORDS = ("上一頁", "下一頁", "官網首頁", "本網站內容屬於", "回到", "TOP")
+      - name: Scrape and update CSV
+        id: scrape
+        continue-on-error: true
+        run: |
+          python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe --insecure
 
+      - name: Upload debug files (if scrape failed)
+        if: steps.scrape.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-files
+          path: |
+            debug_last.html
+            debug_error.txt
+            debug_tokens.txt
+          if-no-files-found: ignore
 
-def fetch_html(params: dict, verify_ssl: bool = True, retries: int = 6, timeout: int = 30) -> str:
-    """
-    抓取 HTML。網站偶發不穩時會重試。
-    """
-    last_err = None
-    for i in range(retries):
-        try:
-            r = requests.get(
-                BASE_URL,
-                params=params,
-                headers=HEADERS,
-                timeout=timeout,
-                verify=verify_ssl,
-                allow_redirects=True,
-            )
-            if r.status_code == 200 and r.text:
-                return r.text
-            last_err = RuntimeError(f"HTTP {r.status_code}")
-        except Exception as e:
-            last_err = e
+      - name: Print debug (if scrape failed)
+        if: steps.scrape.outcome != 'success'
+        run: |
+          echo "===== debug_error.txt (first 200 lines) ====="
+          sed -n '1,200p' debug_error.txt || true
+          echo "===== debug_tokens.txt (first 120 lines) ====="
+          sed -n '1,120p' debug_tokens.txt || true
 
-        time.sleep(1.5 * (i + 1))
+      - name: Fail job if scrape failed
+        if: steps.scrape.outcome != 'success'
+        run: |
+          exit 1
 
-    raise RuntimeError(f"Failed to fetch {BASE_URL} params={params}. last_err={last_err}")
-
-
-def mmdd_to_iso(mmdd: str, base_date: dt.date) -> str:
-    """
-    將 MM/DD 轉成 YYYY-MM-DD。用 base_date 的年份當中心，挑距離 base_date 最近的日期（處理跨年）。
-    """
-    m, d = mmdd.split("/")
-    m, d = int(m), int(d)
-
-    candidates = [
-        dt.date(base_date.year, m, d),
-        dt.date(base_date.year - 1, m, d),
-        dt.date(base_date.year + 1, m, d),
-    ]
-    best = min(candidates, key=lambda x: abs((x - base_date).days))
-    return best.isoformat()
-
-
-def extract_tokens(html: str) -> list[str]:
-    """
-    把 HTML 轉成純文字 tokens（逐行），便於用規則解析。
-    """
-    soup = BeautifulSoup(html, "lxml")
-    raw = soup.get_text("\n")
-    tokens = [t.strip() for t in raw.splitlines() if t.strip()]
-    return tokens
-
-
-def parse_rows(tokens: list[str], base_date: dt.date) -> pd.DataFrame:
-    """
-    不依賴「播出時間/歌曲名稱/演唱...」表頭（因為 GitHub runner 抓到的頁面可能沒有那段）。
-    解析規則：
-      - 看到 MM/DD：更新 current_date
-      - 看到 HH:MM：視為一筆資料起點，依序取：
-            HH:MM、歌名、歌手、（可選：專輯/出版者/CD編號...）
-        extras 會一直吃到下一個 HH:MM 或 MM/DD 為止
-    """
-    rows = []
-    current_date = base_date.isoformat()
-
-    def is_stop(x: str) -> bool:
-        return any(w in x for w in STOP_WORDS)
-
-    i = 0
-    n = len(tokens)
-
-    while i < n:
-        t = tokens[i]
-
-        if is_stop(t):
-            break
-
-        # dt=1..7 的頁面常有 MM/DD
-        if DATE_MMDD_RE.match(t):
-            current_date = mmdd_to_iso(t, base_date)
-            i += 1
-            continue
-
-        # 一筆資料起點：HH:MM
-        if TIME_RE.match(t):
-            play_time = t
-
-            if i + 2 >= n:
-                break
-
-            song = tokens[i + 1]
-            artist = tokens[i + 2]
-
-            # 防呆：如果 song/artist 又是日期或時間，代表錯位，跳過
-            if TIME_RE.match(song) or DATE_MMDD_RE.match(song) or TIME_RE.match(artist) or DATE_MMDD_RE.match(artist):
-                i += 1
-                continue
-
-            extras = []
-            j = i + 3
-            while j < n:
-                nt = tokens[j]
-                if is_stop(nt):
-                    break
-                if TIME_RE.match(nt) or DATE_MMDD_RE.match(nt):
-                    break
-                extras.append(nt)
-                j += 1
-
-            row = {
-                "日期": current_date,
-                "播出時間": play_time,
-                "歌曲名稱": song,
-                "演唱(奏)者": artist,
-                "專輯": extras[0] if len(extras) >= 1 else "",
-                "出版者": extras[1] if len(extras) >= 2 else "",
-                "CD編號": extras[2] if len(extras) >= 3 else "",
-            }
-            rows.append(row)
-
-            i = j
-            continue
-
-        i += 1
-
-    df = pd.DataFrame(rows)
-
-    if df.empty:
-        # 解析不到資料時，把前 800 tokens 寫出來（方便你檢查 GitHub 抓到的頁面內容）
-        Path("debug_tokens.txt").write_text("\n".join(tokens[:800]), encoding="utf-8", errors="ignore")
-        raise ValueError("Parsed 0 rows (see debug_last.html and debug_tokens.txt).")
-
-    return df
-
-
-def fetch_dt_all_pages(dt_days_ago: int, max_pages: int = 50, verify_ssl: bool = True) -> pd.DataFrame:
-    """
-    分頁抓取：
-      - 今天（dt=0）：不要帶 dt 參數，只用 base URL + p
-      - 非今天（dt=1..7）：帶 dt=... + p
-    """
-    dfs = []
-    base_date = dt.date.today() - dt.timedelta(days=dt_days_ago)
-
-    for p in range(1, max_pages + 1):
-        params = {"p": str(p)}
-        if dt_days_ago > 0:
-            params["dt"] = str(dt_days_ago)
-
-        html = fetch_html(params, verify_ssl=verify_ssl)
-
-        # 永遠保留最後一次抓到的 HTML（方便除錯）
-        Path("debug_last.html").write_text(html, encoding="utf-8", errors="ignore")
-
-        tokens = extract_tokens(html)
-
-        # 也先把 tokens 節錄寫出（即使成功也無妨；artifact 設定會忽略找不到檔案）
-        Path("debug_tokens.txt").write_text("\n".join(tokens[:800]), encoding="utf-8", errors="ignore")
-
-        df = parse_rows(tokens, base_date)
-
-        df["dt_days_ago"] = str(dt_days_ago)
-        df["page"] = str(p)
-        df["scraped_at"] = dt.datetime.now().isoformat(timespec="seconds")
-        dfs.append(df)
-
-        # 如果資料很少，通常就是尾頁（保守停止）
-        if len(df) < 5:
-            break
-
-        time.sleep(0.6)
-
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-
-def merge_dedupe(existing_path: Path, new_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    合併到同一份 CSV 並去重，避免你每 30 分鐘跑一次塞滿重複資料。
-    """
-    if existing_path.exists():
-        old_df = pd.read_csv(existing_path, dtype=str, encoding="utf-8-sig")
-        combined = pd.concat([old_df, new_df.astype(str)], ignore_index=True)
-    else:
-        combined = new_df.astype(str)
-
-    keys = [k for k in ["日期", "播出時間", "歌曲名稱", "演唱(奏)者"] if k in combined.columns]
-    if keys:
-        combined = combined.drop_duplicates(subset=keys, keep="last")
-    else:
-        combined = combined.drop_duplicates(keep="last")
-
-    return combined
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dt", type=int, default=0, help="0=today (no dt param), 1..7=days ago")
-    ap.add_argument("--max-pages", type=int, default=50)
-    ap.add_argument("--out", type=str, default="data/iradio_today.csv")
-    ap.add_argument("--append-dedupe", action="store_true")
-    ap.add_argument("--insecure", action="store_true", help="Disable SSL verification (public scraping only)")
-    args = ap.parse_args()
-
-    try:
-        df = fetch_dt_all_pages(args.dt, args.max_pages, verify_ssl=not args.insecure)
-        if df.empty:
-            raise RuntimeError("Parsed 0 rows from all pages (see debug_last.html / debug_tokens.txt).")
-
-        out_path = Path(args.out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if args.append_dedupe:
-            df2 = merge_dedupe(out_path, df)
-            df2.to_csv(out_path, index=False, encoding="utf-8-sig")
-        else:
-            df.to_csv(out_path, index=False, encoding="utf-8-sig")
-
-        print(f"Saved: {out_path} rows={len(df)}")
-
-    except Exception:
-        Path("debug_error.txt").write_text(traceback.format_exc(), encoding="utf-8", errors="ignore")
-        raise
-
-
-if __name__ == "__main__":
-    main()
+      - name: Commit & push (if changed)
+        if: steps.scrape.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/iradio_today.csv
+          git diff --cached --quiet || git commit -m "Update iradio playlist"
+          git push
