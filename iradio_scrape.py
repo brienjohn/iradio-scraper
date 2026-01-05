@@ -6,24 +6,35 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+import urllib3
+from requests.exceptions import SSLError
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 BASE_URL = "https://www.bcc.com.tw/news3_search.asp"
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
 }
 
-def fetch_html(params: dict, retries: int = 5, timeout: int = 25) -> str:
+def fetch_html(params: dict, verify_ssl: bool = True, retries: int = 5, timeout: int = 25) -> str:
     last_err = None
     for i in range(retries):
         try:
-            r = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=timeout)
+            r = requests.get(
+                BASE_URL,
+                params=params,
+                headers=HEADERS,
+                timeout=timeout,
+                verify=verify_ssl,   # <- 重點
+            )
             if r.status_code == 200 and r.text:
                 return r.text
             last_err = RuntimeError(f"HTTP {r.status_code}")
-        except Exception as e:
+        except (SSLError, Exception) as e:
             last_err = e
         time.sleep(1.5 * (i + 1))
     raise RuntimeError(f"Failed to fetch {BASE_URL} params={params}. last_err={last_err}")
+
 
 def extract_table(html: str) -> pd.DataFrame:
     tables = pd.read_html(html)
@@ -40,10 +51,10 @@ def extract_table(html: str) -> pd.DataFrame:
     t = max(tables, key=lambda x: x.shape[0] * x.shape[1])
     return t.dropna(how="all")
 
-def fetch_dt_all_pages(dt_days_ago: int, max_pages: int = 50) -> pd.DataFrame:
+def fetch_dt_all_pages(dt_days_ago: int, max_pages: int = 50, verify_ssl: bool = True) -> pd.DataFrame:
     dfs = []
     for p in range(1, max_pages + 1):
-        html = fetch_html({"dt": str(dt_days_ago), "p": str(p)})
+        html = fetch_html({"dt": str(dt_days_ago), "p": str(p)}, verify_ssl=verify_ssl)
         df = extract_table(html)
 
         if df.shape[0] == 0:
@@ -86,9 +97,10 @@ def main():
     ap.add_argument("--max-pages", type=int, default=50)
     ap.add_argument("--out", type=str, default="data/iradio_today.csv")
     ap.add_argument("--append-dedupe", action="store_true")
+    ap.add_argument("--insecure", action="store_true", help="Disable SSL verification (use only for public scraping)")
     args = ap.parse_args()
 
-    df = fetch_dt_all_pages(args.dt, args.max_pages)
+    df = fetch_dt_all_pages(args.dt, args.max_pages, verify_ssl=not args.insecure)
     if df.empty:
         raise SystemExit("No data fetched (site may be down or layout changed).")
 
