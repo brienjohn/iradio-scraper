@@ -42,7 +42,6 @@ jobs:
           path: |
             debug_last.html
             debug_error.txt
-            debug_tokens.txt
           if-no-files-found: ignore
 
       - name: Print debug (if scrape failed)
@@ -50,8 +49,6 @@ jobs:
         run: |
           echo "===== debug_error.txt (first 200 lines) ====="
           sed -n '1,200p' debug_error.txt || true
-          echo "===== debug_tokens.txt (first 120 lines) ====="
-          sed -n '1,120p' debug_tokens.txt || true
 
       - name: Fail job if scrape failed
         if: steps.scrape.outcome != 'success'
