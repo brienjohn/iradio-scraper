@@ -1,0 +1,40 @@
+name: iradio scrape
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Taipei
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Scrape and update CSV
+        run: |
+          python iradio_scrape.py --dt 0 --out data/iradio_today.csv --append-dedupe
+
+      - name: Commit & push (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/iradio_today.csv
+          git diff --cached --quiet || git commit -m "Update iradio playlist"
+          git push
