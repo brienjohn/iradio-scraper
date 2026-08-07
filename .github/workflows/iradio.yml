@@ -28,16 +28,22 @@ jobs:
           python -m pip install -U pip
           pip install -r requirements.txt
 
-      - name: Scrape yesterday and save as dated CSV
+      - name: Scrape yesterday, backfilling any gap in the past 7 days
         run: |
-          YESTERDAY=$(date -d "yesterday" +%F)
-          python iradio_scrape.py --dt 1 --out "data/iradio_${YESTERDAY}.csv" --append-dedupe --insecure
+          for dt in 1 2 3 4 5 6 7; do
+            DATE=$(date -d "$dt days ago" +%F)
+            FILE="data/iradio_${DATE}.csv"
+            if [ -f "$FILE" ]; then
+              continue
+            fi
+            echo "缺 ${DATE}，補抓..."
+            python iradio_scrape.py --dt "$dt" --out "$FILE" --append-dedupe --insecure
+          done
 
       - name: Commit & push (if changed)
         run: |
-          YESTERDAY=$(date -d "yesterday" +%F)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "data/iradio_${YESTERDAY}.csv"
-          git diff --cached --quiet || git commit -m "Add iradio ${YESTERDAY}"
+          git add data/
+          git diff --cached --quiet || git commit -m "iradio daily + backfill $(date +%F)"
           git push
